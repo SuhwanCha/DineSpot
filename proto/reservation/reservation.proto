@@ -1,0 +1,213 @@
+syntax = "proto3";
+
+package reservation.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/reservation/v1;reservationv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/types.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum ReservationStatus {
+  RESERVATION_STATUS_UNSPECIFIED = 0;
+  RESERVATION_STATUS_PENDING     = 1;  // 고객 신청, 점주 확인 대기
+  RESERVATION_STATUS_CONFIRMED   = 2;  // 점주 확정
+  RESERVATION_STATUS_REJECTED    = 3;  // 점주 거절
+  RESERVATION_STATUS_CANCELLED   = 4;  // 고객 또는 점주 취소
+  RESERVATION_STATUS_COMPLETED   = 5;  // 방문 완료
+  RESERVATION_STATUS_NO_SHOW     = 6;  // 방문 시간 +60분 경과, 미방문
+}
+
+// ─── Entities ────────────────────────────────────────────────
+
+message Reservation {
+  string id            = 1;
+  string customer_id   = 2;
+  string restaurant_id = 3;
+  int32  party_size    = 4;
+
+  // 방문 예정 일시 — ISO 8601, KST (예: "2026-03-25T19:00:00+09:00")
+  string reserved_at = 5;
+
+  ReservationStatus status = 6;
+
+  // 거절 사유 (REJECTED 상태일 때만 유효)
+  string rejection_reason = 7;
+
+  // 취소 사유 (CANCELLED 상태일 때만 유효)
+  string cancel_reason = 8;
+
+  // 멱등키 (UUID v4, 클라이언트가 생성)
+  string idempotency_key = 9;
+
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// 가용 시간 슬롯 (GetAvailability 응답에 사용)
+message TimeSlot {
+  // "HH:MM" 형식
+  string reserved_at = 1;
+
+  // 해당 슬롯에 예약 가능한지 여부
+  bool available = 2;
+
+  // 남은 테이블 수
+  int32 remaining_seats = 3;
+}
+
+// ─── Create ──────────────────────────────────────────────────
+
+message CreateReservationRequest {
+  string customer_id   = 1;
+  string restaurant_id = 2;
+
+  // 방문 희망 일시 — ISO 8601, KST (예: "2026-03-25T19:00:00+09:00")
+  string reserved_at = 3;
+
+  int32 party_size = 4;
+
+  // 멱등키 (필수). UUID v4 권장. 동일 키 재시도 시 기존 결과 반환.
+  string idempotency_key = 5;
+}
+
+message CreateReservationResponse {
+  string            reservation_id = 1;
+  ReservationStatus status         = 2;
+}
+
+// ─── Availability ────────────────────────────────────────────
+
+message GetAvailabilityRequest {
+  string restaurant_id = 1;
+
+  // "YYYY-MM-DD"
+  string date = 2;
+
+  // 예약 인원 (해당 인원을 수용 가능한 슬롯만 반환)
+  int32 party_size = 3;
+}
+
+message GetAvailabilityResponse {
+  repeated TimeSlot slots = 1;
+}
+
+// ─── Update ──────────────────────────────────────────────────
+
+message UpdateReservationRequest {
+  string reservation_id = 1;
+
+  // 변경할 방문 일시 (변경 없으면 빈 문자열)
+  string new_reserved_at = 2;
+
+  // 변경할 인원수 (변경 없으면 0)
+  int32 new_party_size = 3;
+}
+
+message UpdateReservationResponse {
+  ReservationStatus status     = 1;
+  string            updated_at = 2;
+}
+
+// ─── Cancel ──────────────────────────────────────────────────
+
+message CancelReservationRequest {
+  string reservation_id = 1;
+
+  // 취소 사유
+  string reason = 2;
+}
+
+message CancelReservationResponse {
+  ReservationStatus status = 1;
+}
+
+// ─── Confirm / Reject (점주) ─────────────────────────────────
+
+message ConfirmReservationRequest {
+  string reservation_id = 1;
+  string operator_id    = 2;  // 처리한 점주 user_id
+}
+
+message ConfirmReservationResponse {
+  ReservationStatus status = 1;
+}
+
+// ──
+
+message RejectReservationRequest {
+  string reservation_id = 1;
+
+  // 거절 사유 (고객에게 알림으로 전달됨)
+  string reason      = 2;
+  string operator_id = 3;
+}
+
+message RejectReservationResponse {
+  ReservationStatus status = 1;
+}
+
+// ─── No-Show ─────────────────────────────────────────────────
+
+message ApplyNoShowRequest {
+  string reservation_id = 1;
+
+  // "system" (자동 처리) 또는 점주 user_id (수동 처리)
+  string operator_id = 2;
+}
+
+message ApplyNoShowResponse {
+  ReservationStatus status = 1;
+}
+
+// ─── List ────────────────────────────────────────────────────
+
+message ListReservationsRequest {
+  // customer_id 또는 restaurant_id 중 하나 필수
+  string customer_id   = 1;
+  string restaurant_id = 2;
+
+  // 특정 상태만 필터 (UNSPECIFIED이면 전체)
+  ReservationStatus status = 3;
+
+  common.v1.PageRequest page = 4;
+}
+
+message ListReservationsResponse {
+  repeated Reservation       reservations = 1;
+  common.v1.PageResponse     page         = 2;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service ReservationService {
+  // ── 고객용 ──────────────────────────────────────────────────
+
+  // 예약 신청 — 분산 락 획득 후 슬롯 선점, PENDING 상태로 생성
+  rpc CreateReservation (CreateReservationRequest) returns (CreateReservationResponse);
+
+  // 날짜/인원 기준 가용 슬롯 조회
+  rpc GetAvailability (GetAvailabilityRequest) returns (GetAvailabilityResponse);
+
+  // 예약 변경 (방문 일시 또는 인원 수정)
+  rpc UpdateReservation (UpdateReservationRequest) returns (UpdateReservationResponse);
+
+  // 예약 취소 (방문 1시간 전까지 가능)
+  rpc CancelReservation (CancelReservationRequest) returns (CancelReservationResponse);
+
+  // 예약 목록 조회 (고객: 본인 예약, 점주: 매장 예약)
+  rpc ListReservations (ListReservationsRequest) returns (ListReservationsResponse);
+
+  // ── 점주용 ──────────────────────────────────────────────────
+
+  // 예약 확정 (PENDING → CONFIRMED)
+  rpc ConfirmReservation (ConfirmReservationRequest) returns (ConfirmReservationResponse);
+
+  // 예약 거절 (PENDING → REJECTED)
+  rpc RejectReservation (RejectReservationRequest) returns (RejectReservationResponse);
+
+  // 노쇼 처리 (CONFIRMED → NO_SHOW)
+  // 시스템이 자동 호출하거나 점주가 수동 처리
+  rpc ApplyNoShow (ApplyNoShowRequest) returns (ApplyNoShowResponse);
+}

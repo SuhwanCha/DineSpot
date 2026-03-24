@@ -1,0 +1,241 @@
+syntax = "proto3";
+
+package restaurant.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/restaurant/v1;restaurantv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/types.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum RestaurantStatus {
+  RESTAURANT_STATUS_UNSPECIFIED    = 0;
+  RESTAURANT_STATUS_PENDING_REVIEW = 1;  // 등록 신청 후 심사 대기
+  RESTAURANT_STATUS_ACTIVE         = 2;  // 슈퍼관리자 승인 완료, 고객 검색에 노출
+  RESTAURANT_STATUS_INACTIVE       = 3;  // 점주 비활성화 요청
+  RESTAURANT_STATUS_REJECTED       = 4;  // 슈퍼관리자 반려
+}
+
+// ─── Nested Messages ─────────────────────────────────────────
+
+// 브레이크타임 (운영시간 내 쉬는 시간)
+message BreakTime {
+  // "HH:MM" 형식 (24시간제, KST)
+  string start_time = 1;
+  string end_time   = 2;
+}
+
+// 요일별 운영시간 슬롯
+message OperatingHourSlot {
+  // 0=월, 1=화, 2=수, 3=목, 4=금, 5=토, 6=일
+  int32 day_of_week = 1;
+
+  // "HH:MM" 형식. is_closed=true이면 무시.
+  string open_time  = 2;
+  string close_time = 3;
+
+  // 정기 휴무일 여부 (true이면 open/close_time 무시)
+  bool is_closed = 4;
+
+  repeated BreakTime break_times = 5;
+}
+
+// 좌석 정책 (테이블 타입별 수용 인원 및 개수)
+message SeatPolicy {
+  string policy_id     = 1;
+  string restaurant_id = 2;
+
+  // 테이블 유형 — "BOOTH", "TABLE", "BAR", "PRIVATE"
+  string table_type = 3;
+
+  // 수용 가능 최소/최대 인원
+  int32 min_party = 4;
+  int32 max_party = 5;
+
+  // 해당 타입의 테이블 총 개수
+  int32 table_count = 6;
+
+  // 예약 슬롯 단위(분). 30의 배수 (예: 60, 90, 120)
+  int32 slot_duration_min = 7;
+}
+
+// ─── Restaurant ──────────────────────────────────────────────
+
+message Restaurant {
+  string id = 1;
+
+  // 테넌트 식별자 (= owner_id). 멀티 테넌트 격리 기준.
+  string tenant_id = 2;
+  string owner_id  = 3;
+
+  string name        = 4;
+  string address     = 5;
+
+  // 카테고리 — "KOREAN", "JAPANESE", "CHINESE", "WESTERN", "CAFE", "ETC"
+  string category = 6;
+
+  // IANA 타임존 (예: "Asia/Seoul")
+  string timezone = 7;
+
+  RestaurantStatus status      = 8;
+  string           image_url   = 9;
+  string           description = 10;
+
+  repeated OperatingHourSlot operating_hours = 11;
+  repeated SeatPolicy        seat_policies   = 12;
+
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+// ─── Request / Response ──────────────────────────────────────
+
+message CreateRestaurantRequest {
+  string tenant_id   = 1;
+  string name        = 2;
+  string address     = 3;
+  string category    = 4;
+  string timezone    = 5;
+  string description = 6;
+}
+
+message CreateRestaurantResponse {
+  string restaurant_id = 1;
+}
+
+// ──
+
+message GetRestaurantRequest {
+  string restaurant_id = 1;
+}
+
+message GetRestaurantResponse {
+  Restaurant restaurant = 1;
+}
+
+// ──
+
+// 7개 요일치를 한 번에 교체 (partial update 불가)
+message UpdateOperatingHoursRequest {
+  string restaurant_id = 1;
+
+  // 반드시 7개 항목 (day_of_week 0~6 모두 포함)
+  repeated OperatingHourSlot hours = 2;
+}
+
+message UpdateOperatingHoursResponse {
+  // 낙관적 락 버전 (변경 시 증가)
+  int64 version = 1;
+}
+
+// ──
+
+message UpsertSeatPolicyRequest {
+  string restaurant_id     = 1;
+  string table_type        = 2;
+  int32  min_party         = 3;
+  int32  max_party         = 4;
+  int32  table_count       = 5;
+  int32  slot_duration_min = 6;
+}
+
+message UpsertSeatPolicyResponse {
+  string policy_id = 1;
+}
+
+// ──
+
+message SetHolidayRequest {
+  string restaurant_id = 1;
+
+  // "YYYY-MM-DD" 형식
+  string holiday_date = 2;
+
+  // 휴무 사유 (선택)
+  string reason = 3;
+}
+
+message SetHolidayResponse {
+  string holiday_id = 1;
+}
+
+// ──
+
+message SearchRestaurantsRequest {
+  string area       = 1;
+  string category   = 2;
+
+  // "YYYY-MM-DD"
+  string date = 3;
+
+  // "HH:MM"
+  string time = 4;
+
+  int32 party_size = 5;
+
+  common.v1.PageRequest page = 6;
+}
+
+message SearchRestaurantsResponse {
+  repeated Restaurant        restaurants = 1;
+  common.v1.PageResponse     page        = 2;
+}
+
+// ── C(예약 서비스)가 호출하는 핵심 내부 API ──────────────────
+
+message GetReservationReferenceDataRequest {
+  string restaurant_id = 1;
+
+  // "YYYY-MM-DD"
+  string target_date = 2;
+}
+
+message GetReservationReferenceDataResponse {
+  string restaurant_id = 1;
+  string target_date   = 2;
+
+  // true이면 해당 날짜는 예약 불가 (C는 FAILED_PRECONDITION 반환)
+  bool holiday_flag = 3;
+
+  // 해당 요일의 운영시간 (is_closed=true이면 영업 안 함)
+  repeated OperatingHourSlot hours = 4;
+
+  // 해당 매장의 전체 좌석 정책
+  repeated SeatPolicy seat_policies = 5;
+
+  // IANA 타임존 (슬롯 계산 기준)
+  string timezone = 6;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service RestaurantService {
+  // ── 점주용 ──────────────────────────────────────────────────
+
+  // 레스토랑 등록 신청 (상태: PENDING_REVIEW)
+  rpc CreateRestaurant (CreateRestaurantRequest) returns (CreateRestaurantResponse);
+
+  // 레스토랑 상세 조회
+  rpc GetRestaurant (GetRestaurantRequest) returns (GetRestaurantResponse);
+
+  // 요일별 운영시간 일괄 업데이트 (7개 요일 전체 교체)
+  rpc UpdateOperatingHours (UpdateOperatingHoursRequest) returns (UpdateOperatingHoursResponse);
+
+  // 테이블 타입별 좌석 정책 등록/수정
+  rpc UpsertSeatPolicy (UpsertSeatPolicyRequest) returns (UpsertSeatPolicyResponse);
+
+  // 특정 날짜 임시 휴무 설정
+  rpc SetHoliday (SetHolidayRequest) returns (SetHolidayResponse);
+
+  // ── 고객용 ──────────────────────────────────────────────────
+
+  // 매장 검색 (지역, 카테고리, 날짜, 인원수 기준)
+  rpc SearchRestaurants (SearchRestaurantsRequest) returns (SearchRestaurantsResponse);
+
+  // ── 내부 서비스 간 호출 (C에서 호출) ────────────────────────
+
+  // 예약 계산에 필요한 참조 데이터 일괄 조회
+  // holiday_flag, 운영시간, 좌석 정책을 한 번에 반환
+  rpc GetReservationReferenceData (GetReservationReferenceDataRequest) returns (GetReservationReferenceDataResponse);
+}

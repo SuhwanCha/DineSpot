@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package notification.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/notification/v1;notificationv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum NotificationChannel {
+  NOTIFICATION_CHANNEL_UNSPECIFIED = 0;
+  NOTIFICATION_CHANNEL_KAKAO       = 1;  // 카카오 알림톡 (1순위)
+  NOTIFICATION_CHANNEL_SMS         = 2;  // SMS (2순위 fallback)
+  NOTIFICATION_CHANNEL_EMAIL       = 3;  // 이메일 (3순위 fallback)
+}
+
+enum NotificationStatus {
+  NOTIFICATION_STATUS_UNSPECIFIED = 0;
+  NOTIFICATION_STATUS_SENT        = 1;  // 발송 성공
+  NOTIFICATION_STATUS_FAILED      = 2;  // 3회 재시도 후 최종 실패
+  NOTIFICATION_STATUS_SKIPPED     = 3;  // dedupe_key 중복으로 발송 생략
+}
+
+// ─── Template IDs (상수 목록) ────────────────────────────────
+//
+// 아래 template_id 값을 SendNotificationRequest.template_id에 사용합니다.
+//
+// RESERVATION_REQUESTED    — 예약 신청 알림 (점주 수신)
+//   variables: customer_name, reserved_at, party_size
+//
+// RESERVATION_CONFIRMED    — 예약 확정 알림 (고객 수신)
+//   variables: restaurant_name, reserved_at, party_size
+//
+// RESERVATION_REJECTED     — 예약 거절 알림 (고객 수신)
+//   variables: restaurant_name, rejection_reason
+//
+// RESERVATION_CANCELLED    — 예약 취소 알림 (상대방 수신)
+//   variables: restaurant_name, reserved_at, cancel_reason
+//
+// RESERVATION_REMINDER     — 방문 30분 전 리마인더 (고객 수신)
+//   variables: restaurant_name, reserved_at, address
+//
+// WAITING_REGISTERED       — 웨이팅 등록 완료 (고객 수신)
+//   variables: restaurant_name, queue_no, ahead_count, eta_min
+//
+// WAITING_CALLED           — 입장 가능 알림 (고객 수신)
+//   variables: restaurant_name, queue_no, ttl_min
+//
+// WAITING_NO_SHOW          — 10분 무응답 노쇼 처리 (고객 수신)
+//   variables: restaurant_name, queue_no
+//
+// ORDER_CONFIRMED          — 사전 주문 확정 (고객 수신)
+//   variables: restaurant_name, order_id, total_amount
+//
+// ORDER_PAYMENT_FAILED     — 결제 실패, 재결제 링크 (고객 수신)
+//   variables: order_id, payment_url
+
+// ─── Messages ────────────────────────────────────────────────
+
+message SendNotificationRequest {
+  // 발송 채널 (UNSPECIFIED이면 KAKAO → SMS → EMAIL 순서로 자동 시도)
+  NotificationChannel channel = 1;
+
+  // 템플릿 ID (위 상수 목록 참고)
+  string template_id = 2;
+
+  // 수신자 — 전화번호 (E.164 형식) 또는 이메일
+  string recipient = 3;
+
+  // 템플릿 변수 치환 값
+  map<string, string> variables = 4;
+
+  // 중복 방지 키 — 동일 키가 24시간 이내 존재하면 SKIPPED 반환
+  // 생성 규칙: "{template_id}:{primary_id}:{date}"
+  // 예: "RESERVATION_CONFIRMED:rsv_abc123:2026-03-24"
+  string dedupe_key = 5;
+}
+
+message SendNotificationResponse {
+  string             message_id = 1;
+  NotificationStatus status     = 2;
+
+  // ISO 8601
+  string sent_at = 3;
+}
+
+// ──
+
+message GetNotificationLogRequest {
+  string dedupe_key = 1;
+}
+
+message GetNotificationLogResponse {
+  string             message_id = 1;
+  NotificationStatus status     = 2;
+
+  // 실패 사유 (FAILED 상태일 때만 유효)
+  string error_msg = 3;
+
+  google.protobuf.Timestamp sent_at = 4;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service NotificationService {
+  // 알림 발송 (재시도/fallback/중복방지 포함)
+  // 모든 서비스(A/B/C/D)에서 내부 호출
+  rpc SendNotification (SendNotificationRequest) returns (SendNotificationResponse);
+
+  // 발송 이력 조회 (점주 대시보드, 운영 확인용)
+  rpc GetNotificationLog (GetNotificationLogRequest) returns (GetNotificationLogResponse);
+}

@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package common.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/common/v1;commonv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Pagination ──────────────────────────────────────────────
+
+// 커서 기반 페이지네이션 요청
+message PageRequest {
+  // 한 페이지에 반환할 최대 항목 수 (기본 20, 최대 100)
+  int32 page_size = 1;
+
+  // 이전 응답의 next_page_token 값. 빈 문자열이면 첫 페이지.
+  string page_token = 2;
+}
+
+// 커서 기반 페이지네이션 응답
+message PageResponse {
+  // 다음 페이지 커서. 마지막 페이지이면 빈 문자열.
+  string next_page_token = 1;
+
+  // 전체 항목 수 (COUNT 쿼리 비용이 크므로 선택적으로 반환)
+  int32 total_count = 2;
+}
+
+// ─── Date Range ──────────────────────────────────────────────
+
+message DateRange {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to   = 2;
+}
+
+// ─── Money ───────────────────────────────────────────────────
+
+// 금액 (소수점 오차 방지를 위해 정수 원 단위 사용)
+message Money {
+  // 원 단위 정수 (예: 15000 = 15,000원)
+  int64 amount = 1;
+
+  // 통화 코드 (예: "KRW")
+  string currency = 2;
+}

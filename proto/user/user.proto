@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/user/v1;userv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/types.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum UserRole {
+  USER_ROLE_UNSPECIFIED = 0;
+  USER_ROLE_CUSTOMER    = 1;
+  USER_ROLE_OWNER       = 2;
+  USER_ROLE_SUPER_ADMIN = 3;
+}
+
+// ─── Entities ────────────────────────────────────────────────
+
+message User {
+  string   id    = 1;
+  string   email = 2;
+  string   name  = 3;
+  string   phone = 4;
+  UserRole role  = 5;
+
+  // 누적 노쇼 횟수 (3회 도달 시 is_restricted=true)
+  int32 no_show_count = 6;
+
+  // 예약 제한 여부
+  bool is_restricted = 7;
+
+  // 제한 해제 일시 (is_restricted=true일 때만 유효)
+  google.protobuf.Timestamp restricted_until = 8;
+
+  // 마케팅 알림 수신 거부 여부
+  bool notification_opt_out = 9;
+
+  // 로케일 (예: "ko-KR")
+  string locale = 10;
+
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// ─── Register ────────────────────────────────────────────────
+
+message RegisterRequest {
+  // 이메일 주소 (필수, 유일)
+  string email = 1;
+
+  // 비밀번호 (필수, 8자 이상)
+  string password = 2;
+
+  // 이름 (필수)
+  string name = 3;
+
+  // 전화번호 (선택, E.164 형식 권장)
+  string phone = 4;
+
+  // 가입 역할 — CUSTOMER 또는 OWNER만 허용 (기본: CUSTOMER)
+  UserRole role = 5;
+}
+
+message RegisterResponse {
+  string                    user_id    = 1;
+  google.protobuf.Timestamp created_at = 2;
+}
+
+// ─── Login ───────────────────────────────────────────────────
+
+message LoginRequest {
+  string email    = 1;
+  string password = 2;
+
+  // 기기 식별자 — 감사로그 및 refresh token 격리에 사용 (선택)
+  string device_id = 3;
+}
+
+message LoginResponse {
+  // JWT Access Token (HS256, 15분 유효)
+  string access_token = 1;
+
+  // Opaque Refresh Token (7일 유효, RTR 적용)
+  string refresh_token = 2;
+
+  // access_token 만료까지 남은 초 (900)
+  int64 expires_in = 3;
+
+  // 로그인한 유저 정보
+  User user = 4;
+}
+
+// ─── Refresh Token ───────────────────────────────────────────
+
+message RefreshTokenRequest {
+  // 유효한 refresh_token (만료/폐기된 토큰은 UNAUTHENTICATED)
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  // 새로 발급된 access_token
+  string access_token = 1;
+
+  // RTR: 새로 발급된 refresh_token (기존 토큰은 즉시 폐기)
+  string refresh_token = 2;
+
+  int64 expires_in = 3;
+}
+
+// ─── Logout ──────────────────────────────────────────────────
+
+message LogoutRequest {
+  // access_token 또는 refresh_token 중 하나 이상 필수
+  string access_token  = 1;
+  string refresh_token = 2;
+}
+
+message LogoutResponse {
+  bool revoked = 1;
+}
+
+// ─── Profile ─────────────────────────────────────────────────
+
+message GetProfileRequest {
+  // 빈 문자열이면 인증 컨텍스트(x-user-id 메타데이터)에서 자동 추출
+  string user_id = 1;
+}
+
+message GetProfileResponse {
+  User user = 1;
+}
+
+message UpdateProfileRequest {
+  // 아래 필드 중 변경할 항목만 포함. 빈 문자열/기본값은 변경하지 않음.
+  string name                 = 1;
+  string phone                = 2;
+  string locale               = 3;
+  bool   notification_opt_out = 4;
+}
+
+message UpdateProfileResponse {
+  User user = 1;
+}
+
+// ─── RBAC Authorization ──────────────────────────────────────
+
+// 다른 서비스의 auth interceptor가 호출하는 내부 API
+message AuthorizeRequest {
+  string user_id  = 1;
+
+  // "CUSTOMER" | "OWNER" | "SUPER_ADMIN"
+  string role = 2;
+
+  // 액션 (예: "reservation:create", "restaurant:update")
+  string action = 3;
+
+  // 리소스 (예: "restaurant:abc123", "*")
+  string resource = 4;
+}
+
+message AuthorizeResponse {
+  bool allow = 1;
+
+  // 거부 사유 (예: "tenant_mismatch", "account_restricted")
+  string reason = 2;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service UserService {
+  // ── 공개 API (인증 불필요) ──────────────────────────────────
+
+  // 회원가입 (CUSTOMER, OWNER 역할만 허용)
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+
+  // 로그인 — Access/Refresh Token 발급
+  rpc Login (LoginRequest) returns (LoginResponse);
+
+  // Refresh Token Rotation 기반 토큰 재발급
+  rpc RefreshToken (RefreshTokenRequest) returns (RefreshTokenResponse);
+
+  // ── 인증 필요 ───────────────────────────────────────────────
+
+  // 로그아웃 — 토큰 블랙리스트 등록
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
+
+  // 프로필 조회 (본인 또는 SUPER_ADMIN)
+  rpc GetProfile (GetProfileRequest) returns (GetProfileResponse);
+
+  // 프로필 수정 (본인만)
+  rpc UpdateProfile (UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // ── 내부 서비스 간 호출 (x-internal-secret 헤더 필요) ───────
+
+  // RBAC 권한 검증 — B/C/D/E의 auth interceptor에서 호출
+  rpc Authorize (AuthorizeRequest) returns (AuthorizeResponse);
+}

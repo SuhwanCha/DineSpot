@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package admin.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/admin/v1;adminv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/types.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum ApprovalDecision {
+  APPROVAL_DECISION_UNSPECIFIED = 0;
+  APPROVAL_DECISION_APPROVE     = 1;
+  APPROVAL_DECISION_REJECT      = 2;
+}
+
+enum AuditResult {
+  AUDIT_RESULT_UNSPECIFIED = 0;
+  AUDIT_RESULT_SUCCESS     = 1;
+  AUDIT_RESULT_FAILURE     = 2;
+}
+
+// ─── Entities ────────────────────────────────────────────────
+
+message AuditLog {
+  string id         = 1;
+  string actor_id   = 2;
+  string actor_role = 3;
+
+  // 액션 (예: "restaurant.approve", "reservation.cancel", "user.restrict")
+  string action = 4;
+
+  // 리소스 (예: "restaurant:abc123", "reservation:def456")
+  string resource = 5;
+
+  // 요청 추적 ID (x-request-id 메타데이터)
+  string request_id = 6;
+
+  AuditResult result = 7;
+
+  // 변경 상세 (JSON 직렬화된 before/after 값 등)
+  string detail = 8;
+
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message KPIData {
+  string tenant_id   = 1;
+  string period_from = 2;  // "YYYY-MM-DD"
+  string period_to   = 3;
+
+  // 해당 기간 총 예약 신청 수
+  int64 total_reservations = 4;
+
+  // 예약 성사율 (CONFIRMED / total_reservations)
+  float reservation_rate = 5;
+
+  // 취소율
+  float cancel_rate = 6;
+
+  // 노쇼율
+  float noshow_rate = 7;
+
+  // 평균 웨이팅 시간 (분)
+  float wait_avg_min = 8;
+
+  // 총 사전 주문 수
+  int64 total_orders = 9;
+
+  // 총 매출 (원 단위)
+  int64 total_revenue = 10;
+}
+
+// ─── Approve Restaurant ──────────────────────────────────────
+
+message ApproveRestaurantRequest {
+  string admin_id      = 1;
+  string restaurant_id = 2;
+
+  ApprovalDecision decision = 3;
+
+  // 거절 사유 (REJECT일 때 필수)
+  string reason = 4;
+}
+
+message ApproveRestaurantResponse {
+  // "ACTIVE" or "REJECTED"
+  string approval_status = 1;
+
+  // ISO 8601
+  string approved_at = 2;
+}
+
+// ─── Audit Log ───────────────────────────────────────────────
+
+message WriteAuditLogRequest {
+  string actor_id   = 1;
+  string actor_role = 2;
+  string action     = 3;
+  string resource   = 4;
+  string request_id = 5;
+
+  AuditResult result = 6;
+
+  // 변경 상세 정보 (JSON 문자열)
+  string detail = 7;
+}
+
+message WriteAuditLogResponse {
+  string log_id = 1;
+}
+
+// ──
+
+message QueryAuditLogsRequest {
+  // 특정 actor만 필터 (빈 문자열이면 전체)
+  string actor_id = 1;
+
+  // 특정 action만 필터 (빈 문자열이면 전체)
+  string action = 2;
+
+  // 날짜 범위 (최대 30일)
+  common.v1.DateRange date_range = 3;
+
+  common.v1.PageRequest page = 4;
+}
+
+message QueryAuditLogsResponse {
+  repeated AuditLog      logs = 1;
+  common.v1.PageResponse page = 2;
+}
+
+// ─── KPI ─────────────────────────────────────────────────────
+
+message GetKPIRequest {
+  // 특정 테넌트 (빈 문자열이면 전체 플랫폼 집계)
+  string tenant_id = 1;
+
+  // "YYYY-MM-DD"
+  string from = 2;
+  string to   = 3;
+
+  // 집계 단위 — "DAY", "WEEK", "MONTH"
+  string granularity = 4;
+}
+
+message GetKPIResponse {
+  repeated KPIData data = 1;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service AdminService {
+  // ── 슈퍼관리자용 ─────────────────────────────────────────────
+
+  // 레스토랑 등록 신청 승인/거절
+  rpc ApproveRestaurant (ApproveRestaurantRequest) returns (ApproveRestaurantResponse);
+
+  // KPI 대시보드 데이터 조회
+  rpc GetKPI (GetKPIRequest) returns (GetKPIResponse);
+
+  // ── 내부 서비스 간 호출 ────────────────────────────────────
+
+  // 감사 로그 기록 — 모든 서비스에서 중요 액션 후 비동기 호출
+  rpc WriteAuditLog (WriteAuditLogRequest) returns (WriteAuditLogResponse);
+
+  // 감사 로그 조회
+  rpc QueryAuditLogs (QueryAuditLogsRequest) returns (QueryAuditLogsResponse);
+}

@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package waiting.v1;
+
+option go_package = "github.com/dinespot/backend/internal/gen/waiting/v1;waitingv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─── Enums ───────────────────────────────────────────────────
+
+enum WaitingStatus {
+  WAITING_STATUS_UNSPECIFIED = 0;
+  WAITING_STATUS_WAITING     = 1;  // 대기 중
+  WAITING_STATUS_READY       = 2;  // 점주 호출됨 (10분 타이머 시작)
+  WAITING_STATUS_SEATED      = 3;  // 입장 완료
+  WAITING_STATUS_NO_SHOW     = 4;  // 10분 무응답
+  WAITING_STATUS_CANCELLED   = 5;  // 고객 직접 취소
+}
+
+// ─── Entities ────────────────────────────────────────────────
+
+message WaitingEntry {
+  string id            = 1;
+  string restaurant_id = 2;
+  string customer_id   = 3;
+
+  // 발급된 순번 (Redis INCR, 절대 중복 없음)
+  int32 queue_no = 4;
+
+  int32         party_size = 5;
+  WaitingStatus status     = 6;
+
+  // 나보다 앞서 대기 중인 팀 수
+  int32 ahead_count = 7;
+
+  // 예상 대기 시간 (분)
+  int32 eta_min = 8;
+
+  google.protobuf.Timestamp registered_at = 9;
+
+  // 점주가 호출한 시각 (READY 전환 시각)
+  google.protobuf.Timestamp notified_at = 10;
+}
+
+// SSE(Server-Sent Events)로 브로드캐스트하는 큐 상태 이벤트
+message QueueUpdateEvent {
+  string restaurant_id = 1;
+
+  // 현재 대기 중인 총 팀 수
+  int32 total_waiting = 2;
+
+  // 현재 호출된 순번 (READY 상태)
+  int32 current_no = 3;
+
+  WaitingStatus status = 4;
+
+  // UUID v4 — 클라이언트가 중복 수신 제거에 사용
+  string event_id = 5;
+
+  // ISO 8601 (예: "2026-03-24T18:30:00+09:00")
+  string occurred_at = 6;
+}
+
+// ─── Join (웨이팅 등록) ───────────────────────────────────────
+
+message JoinWaitingRequest {
+  string restaurant_id = 1;
+  string customer_id   = 2;
+  int32  party_size    = 3;
+
+  // UUID v4. 동일 키 재시도 시 기존 순번 반환.
+  string idempotency_key = 4;
+}
+
+message JoinWaitingResponse {
+  string waiting_id  = 1;
+  int32  queue_no    = 2;
+  int32  ahead_count = 3;
+  int32  eta_min     = 4;
+}
+
+// ─── Call Next (점주 호출) ───────────────────────────────────
+
+message CallNextRequest {
+  string restaurant_id = 1;
+  string operator_id   = 2;
+}
+
+message CallNextResponse {
+  // 호출된 웨이팅 항목 ID
+  string called_waiting_id = 1;
+  int32  queue_no          = 2;
+
+  // 응답 제한 시간 (분). 기본 10분.
+  int32 ttl_min = 3;
+}
+
+// ─── Cancel (고객 취소) ──────────────────────────────────────
+
+message CancelWaitingRequest {
+  string waiting_id = 1;
+  string reason     = 2;
+}
+
+message CancelWaitingResponse {
+  WaitingStatus status = 1;
+}
+
+// ─── Confirm Seated (입장 확인) ──────────────────────────────
+
+message ConfirmSeatedRequest {
+  string waiting_id  = 1;
+  string customer_id = 2;  // 본인 확인용
+}
+
+message ConfirmSeatedResponse {
+  WaitingStatus status = 1;
+}
+
+// ─── Get Status ──────────────────────────────────────────────
+
+message GetWaitingStatusRequest {
+  string waiting_id = 1;
+}
+
+message GetWaitingStatusResponse {
+  WaitingEntry entry = 1;
+}
+
+// ─── SSE Stream ──────────────────────────────────────────────
+
+// 특정 매장의 큐 변경 이벤트를 실시간 구독
+message StreamQueueRequest {
+  string restaurant_id = 1;
+}
+
+// ─── Service ─────────────────────────────────────────────────
+
+service WaitingService {
+  // ── 고객용 ──────────────────────────────────────────────────
+
+  // 웨이팅 등록 — Redis INCR으로 순번 원자 발급
+  rpc JoinWaiting (JoinWaitingRequest) returns (JoinWaitingResponse);
+
+  // 웨이팅 취소
+  rpc CancelWaiting (CancelWaitingRequest) returns (CancelWaitingResponse);
+
+  // 입장 확인 (호출 알림 수신 후)
+  rpc ConfirmSeated (ConfirmSeatedRequest) returns (ConfirmSeatedResponse);
+
+  // 내 웨이팅 상태 조회
+  rpc GetWaitingStatus (GetWaitingStatusRequest) returns (GetWaitingStatusResponse);
+
+  // ── 점주용 ──────────────────────────────────────────────────
+
+  // 다음 순번 고객 호출 — Sorted Set 최솟값 선택, 10분 타이머 시작
+  rpc CallNext (CallNextRequest) returns (CallNextResponse);
+
+  // ── 실시간 스트리밍 ─────────────────────────────────────────
+
+  // 매장 큐 상태 변경 이벤트 구독 (gRPC Server Streaming)
+  // Envoy가 HTTP/SSE로 변환하여 브라우저에 전달
+  rpc StreamQueueUpdates (StreamQueueRequest) returns (stream QueueUpdateEvent);
+}
