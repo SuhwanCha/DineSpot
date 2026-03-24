@@ -34,9 +34,19 @@ Unauthorized use for academic research, publications, commercial products, or de
 
 ### ① System Overview
 
-A **distributed multi-tenant restaurant reservation platform** that connects multiple restaurants and customers. Customer devices (web/app) and restaurant management terminals connect to a central server to handle table reservations, real-time waiting queues, and pre-order menus.
+A **distributed multi-tenant restaurant reservation platform** that connects multiple restaurants and customers. Customer devices (web/app), restaurant management terminals (web dashboard), and in-store kiosk/POS terminals connect to a central server to handle table reservations, real-time waiting queues, and menu pre-orders.
 
-Customers can view real-time table availability and make reservations from any device. Restaurant owners manage reservations via a dedicated management terminal (web dashboard or POS integration). All reservation data is consistently managed on the central server, and concurrent access conflicts are controlled in server-side critical sections.
+Customers can view real-time table availability and make reservations from any device. Restaurant owners approve and manage reservations through an owner terminal or POS. Entrance kiosks also support on-site waiting registration and reservation verification. Because geographically distributed customer devices, owner terminals, and kiosks must all interact with the central server, **client/server separation is essential**.
+
+All reservation data is consistently managed on the central server, and concurrent access conflicts are controlled in server-side critical sections.
+
+The core control objects are **Reservation**, **WaitingEntry**, and **Restaurant (operating state)**. Reservation follows the flow `PENDING → CONFIRMED/REJECTED → COMPLETED/CANCELLED/NO_SHOW`, while WaitingEntry follows `WAITING → READY → SEATED/NO_SHOW/CANCELLED`. This is not a simple CRUD application, but a **dynamic system centered on state transitions and exception flows**.
+
+The following alternative flows are also required at the problem-definition stage:
+- If the requested slot is fully booked, the reservation is rejected and waiting registration is suggested.
+- If the same customer requests a duplicate reservation for the same time slot, the reservation is rejected.
+- If cancellation is requested after the deadline, cancellation is rejected or a fee is applied.
+- If payment fails, the pre-order is not finalized and re-payment is prompted.
 
 ---
 
@@ -153,6 +163,35 @@ All business data is **not stored on the client** but managed as a **Single Sour
 
 ---
 
+## Part 1.5. Product Scope and Success Criteria
+
+### ① MVP Scope (This Semester's Implementation/Demo Baseline)
+- Customer web: restaurant search, detail view, reservation request, reservation cancellation, waiting registration/status lookup
+- Owner web: restaurant information management, reservation approval/rejection, waiting call and seating handling
+- Admin web: restaurant registration approval/rejection, overall reservation status monitoring
+- Core reservation/waiting state transitions must be consistently reproduced across UI and API
+- Demo must show correctness of concurrent-reservation conflict prevention and waiting-sequence issuance
+
+### ② Out of Scope (Non-Core for This Semester)
+- Multilingual support
+- Multi-region deployment
+- Advanced recommendation/personalization system
+- Full implementation of real POS vendor integrations
+- Sophisticated settlement/tax features
+
+### ③ Success Criteria (Demo/Evaluation Baseline)
+- Requirements traceability from Use Case Model to static and dynamic models
+- At least one demoable core scenario per actor (Customer/Owner/Admin)
+- Test verification of representative concurrency scenarios (same-slot concurrent reservation, waiting sequence issuance)
+- State transition rules remain consistent across documentation, API, and UI without contradictions
+- Explainable, **verifiable artifact quality** rather than superficial AI-assisted output
+
+### ④ Key Assumptions and Constraints
+- Initial version operates in a single country and single timezone (e.g., Asia/Seoul)
+- Payment assumes one PG integration; multi-PG routing is out of scope
+- Notification channels support prioritized fallback when the primary channel fails
+- Store terminals (POS/kiosk) are assumed to be web-based terminals, not separate native apps
+
 ## Part 2. Detailed Requirements Specification
 
 ### FR (Functional Requirements)
@@ -177,6 +216,15 @@ All business data is **not stored on the client** but managed as a **Single Sour
 | FR-REST-04 | Owners can mark specific dates as holidays; reservations are disabled on those dates | P1 |
 | FR-REST-05 | Customers can search restaurants by name, area, food category, date, and party size | P0 |
 | FR-REST-06 | Real-time available table count is displayed on the restaurant detail page | P0 |
+
+#### FR-SEARCH: Search and Discovery
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-SEARCH-01 | Customers can search restaurants by area, category, date, time, and party size | P0 |
+| FR-SEARCH-02 | Customers can filter results by rating, reservation availability, and waiting availability | P1 |
+| FR-SEARCH-03 | Customers can view operating hours, menu, cover images, location, and remaining table summary on the restaurant detail page | P0 |
+| FR-SEARCH-04 | If no search results exist, the system can suggest alternative dates/times or similar-category restaurants | P1 |
 
 #### FR-RESERVATION: Reservation Management
 
@@ -212,6 +260,15 @@ All business data is **not stored on the client** but managed as a **Single Sour
 | FR-MENU-03 | Payment must be completed for a pre-order to be confirmed | P1 |
 | FR-MENU-04 | On payment failure, the order remains in PAYMENT_PENDING status and a re-payment link is sent | P1 |
 | FR-MENU-05 | Out-of-stock menu items are shown as disabled in the ordering UI | P1 |
+
+#### FR-NOTIFICATION: Notification
+
+| ID | Requirement | Priority |
+|----|------------|----------|
+| FR-NOTI-01 | Send customer notifications on reservation creation, approval, rejection, cancellation, and visit reminders | P0 |
+| FR-NOTI-02 | Send immediate customer notifications when waiting status transitions to READY | P0 |
+| FR-NOTI-03 | Apply retry policy and fallback-channel rules when notification delivery fails | P1 |
+| FR-NOTI-04 | Owners can view notification delivery logs and failure reasons | P1 |
 
 #### FR-ADMIN: Administrator
 
@@ -260,6 +317,22 @@ All business data is **not stored on the client** but managed as a **Single Sour
 | NFR-SEC-03 | Restaurant owners can only access their own restaurant data (multi-tenant isolation) |
 | NFR-SEC-04 | Passwords must be stored as bcrypt hash (cost=12 or higher) |
 | NFR-SEC-05 | CSRF token validation applied to API requests (web clients) |
+
+#### NFR-UX: User Experience
+
+| ID | Requirement |
+|----|------------|
+| NFR-UX-01 | Customers must perceive reservation availability and waiting-status changes with less than 1 second latency |
+| NFR-UX-02 | Failure/rejection messages must include both the cause and next action (retry, alternate time, waiting registration) |
+| NFR-UX-03 | The owner dashboard must show today's reservations, current waiting queue, and seating pending status on one screen |
+
+#### NFR-OBS: Observability and Operations
+
+| ID | Requirement |
+|----|------------|
+| NFR-OBS-01 | Reservation creation, state changes, notification delivery, and payment success/failure events must be logged as structured logs |
+| NFR-OBS-02 | Collect reservation success rate, duplicate-reservation prevention count, waiting drop-off rate, and notification failure rate as metrics |
+| NFR-OBS-03 | For incident analysis, propagate a request-level trace ID from API Gateway to downstream services |
 
 #### NFR-SCALE: Scalability
 
@@ -462,6 +535,19 @@ restaurant-reservation/
 ```
 
 ---
+
+## Part 6.5. Requirements Traceability Mapping (Course Deliverable Linkage)
+
+| PRD Element | Downstream Deliverable |
+|------------|------------------------|
+| Actor definitions (Customer/Owner/Admin/External Systems) | Use Case Diagram |
+| UC-01 to UC-09 | Use Case Specification |
+| Reservation/Waiting/Restaurant states | Statechart / Dynamic Model |
+| Reservation, WaitingEntry, Restaurant, Menu, Payment | Domain Model / Class Diagram |
+| Concurrency control rules | Sequence Diagram / Robustness Analysis |
+| FR/NFR priorities | Iteration/Phase plan |
+
+This mapping clarifies that the PRD serves as an input artifact for downstream outputs across the course flow: requirements engineering → static modeling → dynamic modeling.
 
 ## Part 7. Development Phases
 
