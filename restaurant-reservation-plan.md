@@ -1,5 +1,5 @@
 ---
-© 2026 Suhwan Cha and contributors. All rights reserved.
+© 2026 Suhwan Cha @eumjil @hyunQQQQ @Jeonyomi @LeeDongGoo. All rights reserved.
 
 The ideas, system design, architecture, data structures, prompts, and methodologies described in this document are proprietary intellectual property.
 
